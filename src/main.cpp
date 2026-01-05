@@ -10,7 +10,6 @@
 #include "bq769x0.h"
 #include "main.h"
 
-M365BMS g_M365BMS;
 BMSSettings g_Settings;
 
 bool g_Debug = true;
@@ -27,6 +26,16 @@ int g_millisOverflows = 0;
 
 extern volatile unsigned long timer0_millis;
 volatile unsigned int g_timer2Overflows = 0;
+
+// BikeBus battery state cache
+uint16_t g_batteryVoltage = 0;      // in mV
+int16_t g_batteryCurrent = 0;       // in mA
+int16_t g_batteryAvgCurrent = 0;    // in mA
+uint8_t g_batterySOC = 0;           // State of Charge in %
+uint16_t g_batteryTemp = 0;         // in 0.1K
+uint16_t g_batteryStatus = 0;       // Status flags
+uint16_t g_batteryTimeToEmpty = 0;  // in minutes
+uint16_t g_cellVoltages[15] = {0};  // Cell voltages in mV
 
 void alertISR()
 {
@@ -52,8 +61,8 @@ void setup()
     MCUSR = 0;
     wdt_disable();
 
-    Serial.begin(76800);
-    Serial.println(F("BOOTED!"));
+    Serial.begin(9600); // BikeBus uses 9600 baud
+    Serial.println(F("BikeBus BMS BOOTED!"));
 
     power_adc_disable();
     power_spi_disable();
@@ -144,254 +153,223 @@ void applySettings()
 
     g_BMS.adjADCPackOffset(g_Settings.adcPackOffset);
     g_BMS.adjADCCellsOffset(g_Settings.adcCellsOffset);
-
-    strncpy(g_M365BMS.serial, g_Settings.serial, sizeof(g_M365BMS.serial));
-    g_M365BMS.design_capacity = g_M365BMS.real_capacity = g_Settings.capacity;
-    g_M365BMS.nominal_voltage = g_Settings.nominal_voltage;
-    g_M365BMS.date = g_Settings.date;
-    g_M365BMS.num_cycles = g_Settings.num_cycles;
-    g_M365BMS.num_charged = g_Settings.num_charged;
 }
 
 
-void onNinebotMessage(NinebotMessage &msg)
+void onBikeBusMessage(BikeBusMessage &msg)
 {
     // Enable TX
     UCSR0B |= (1 << TXEN0);
 
-    if(msg.addr != M365BMS_RADDR)
+    if(msg.address != BIKEBUS_BATTERY_ADDR)
         return;
 
-    if(msg.mode == 0x01 || msg.mode == 0xF1)
+    // Prepare response message
+    BikeBusMessage response;
+    response.address = BIKEBUS_BATTERY_ADDR;
+    response.token = msg.token;
+    
+    uint16_t value = 0;
+
+    // Handle different token requests
+    switch(msg.token)
     {
-        if(msg.length != 3)
-            return;
-
-        uint16_t ofs = (uint16_t)msg.offset * 2; // word aligned
-        uint8_t sz = msg.data[0];
-
-        if(sz > sizeof(NinebotMessage::data))
-            return;
-
-        msg.addr = M365BMS_WADDR;
-        msg.length = 2 + sz;
-
-        if(msg.mode == 0x01)
-        {
-            if((ofs + sz) > sizeof(g_M365BMS))
-                return;
-
-            memcpy(&msg.data, &((uint8_t *)&g_M365BMS)[ofs], sz);
-        }
-        else if(msg.mode == 0xF1)
-        {
-            if((ofs + sz) > sizeof(g_Settings))
-                return;
-
-            memcpy(&msg.data, &((uint8_t *)&g_Settings)[ofs], sz);
-        }
-
-        ninebotSend(msg);
+        case BATTERY_TOKEN_VOLTAGE:
+            value = g_batteryVoltage;
+            break;
+            
+        case BATTERY_TOKEN_CURRENT:
+            value = (uint16_t)g_batteryCurrent;
+            break;
+            
+        case BATTERY_TOKEN_AVG_CURRENT:
+            value = (uint16_t)g_batteryAvgCurrent;
+            break;
+            
+        case BATTERY_TOKEN_SOC:
+            value = g_batterySOC;
+            break;
+            
+        case BATTERY_TOKEN_TEMP:
+            value = g_batteryTemp;
+            break;
+            
+        case BATTERY_TOKEN_STATUS:
+            value = g_batteryStatus;
+            break;
+            
+        case BATTERY_TOKEN_AVG_TIME_EMPTY:
+        case BATTERY_TOKEN_TIME_TO_EMPTY:
+            value = g_batteryTimeToEmpty;
+            break;
+            
+        case BATTERY_TOKEN_REMAINING_CAP:
+            value = (uint16_t)(g_Settings.capacity * g_batterySOC / 100);
+            break;
+            
+        case BATTERY_TOKEN_DESIGN_CAP:
+            value = g_Settings.capacity;
+            break;
+            
+        case BATTERY_TOKEN_DESIGN_VOLT:
+            value = g_Settings.nominal_voltage;
+            break;
+            
+        case BATTERY_TOKEN_CYCLE_COUNT:
+            value = g_Settings.num_cycles;
+            break;
+            
+        case BATTERY_TOKEN_MANUF_DATE:
+            value = g_Settings.date;
+            break;
+            
+        case BATTERY_TOKEN_FLAGS_R:
+            // Return status flags
+            value = g_batteryStatus;
+            break;
+            
+        // Cell voltages
+        case BATTERY_TOKEN_CELL1:
+            value = g_cellVoltages[0];
+            break;
+        case BATTERY_TOKEN_CELL2:
+            value = g_cellVoltages[1];
+            break;
+        case BATTERY_TOKEN_CELL3:
+            value = g_cellVoltages[2];
+            break;
+        case BATTERY_TOKEN_CELL4:
+            value = g_cellVoltages[3];
+            break;
+        case BATTERY_TOKEN_CELL5:
+            value = g_cellVoltages[4];
+            break;
+        case BATTERY_TOKEN_CELL6:
+            value = g_cellVoltages[5];
+            break;
+        case BATTERY_TOKEN_CELL7:
+            value = g_cellVoltages[6];
+            break;
+        case BATTERY_TOKEN_CELL8:
+            value = g_cellVoltages[7];
+            break;
+        case BATTERY_TOKEN_CELL9:
+            value = g_cellVoltages[8];
+            break;
+        case BATTERY_TOKEN_CELL10:
+            value = g_cellVoltages[9];
+            break;
+            
+        default:
+            // Unknown token - send error response (token 0x00)
+            response.token = 0x00;
+            value = 0;
+            break;
     }
-    else if(msg.mode == 0x03 || msg.mode == 0xF3)
-    {
-        uint16_t ofs = (uint16_t)msg.offset * 2; // word aligned
-        uint8_t sz = msg.length - 2;
 
-        if(msg.mode == 0x03)
-        {
-            if((ofs + sz) > sizeof(g_M365BMS))
-                return;
+    // Send response
+    response.dataLow = value & 0xFF;
+    response.dataHigh = (value >> 8) & 0xFF;
+    bikebusSend(response);
+}
 
-            memcpy(&((uint8_t *)&g_M365BMS)[ofs], &msg.data, sz);
-        }
-        else if(msg.mode == 0xF3)
-        {
-            if((ofs + sz) > sizeof(g_Settings))
-                return;
-
-            memcpy(&((uint8_t *)&g_Settings)[ofs], &msg.data, sz);
-        }
+void bikebusSend(BikeBusMessage &msg)
+{
+    // Calculate checksum (simple sum of first 4 bytes)
+    msg.checksum = msg.address + msg.token + msg.dataLow + msg.dataHigh;
+    
+    Serial.write(msg.address);
+    Serial.write(msg.token);
+    Serial.write(msg.dataLow);
+    Serial.write(msg.dataHigh);
+    Serial.write(msg.checksum);
+    Serial.flush(); // Wait for transmission to complete
+    
+    // Debug: Print sent message
+    if (g_Debug) {
+        Serial.print(F("TX: "));
+        Serial.print(msg.address, HEX);
+        Serial.print(F(" "));
+        Serial.print(msg.token, HEX);
+        Serial.print(F(" "));
+        Serial.print(msg.dataLow, HEX);
+        Serial.print(F(" "));
+        Serial.print(msg.dataHigh, HEX);
+        Serial.print(F(" "));
+        Serial.println(msg.checksum, HEX);
     }
-    else if(msg.mode == 0xFA)
-    {
-        switch(msg.offset)
-        {
-            case 1: {
-                applySettings();
-            } break;
-            case 2: {
-                EEPROM.get(0, g_Settings);
-            } break;
-            case 3: {
-                EEPROM.put(0, g_Settings);
-            } break;
-#if BQ769X0_DEBUG
-            case 4: {
-                g_Debug = msg.data[0];
-            } break;
-            case 5: {
-                debug_print();
-            } break;
-#endif
-            case 6: {
-                g_BMS.disableDischarging();
-                g_BMS.disableCharging();
-            } break;
-            case 7: {
-                g_BMS.enableDischarging();
-                g_BMS.enableCharging();
-            } break;
-
-            case 8: {
-                digitalWrite(BMS_VDD_EN_PIN, LOW);
-            } break;
-            case 9: {
-                digitalWrite(BMS_VDD_EN_PIN, HIGH);
-            } break;
-            case 10: {
-                // test watchdog
-                for (;;) { (void)0; }
-            } break;
-            case 11: {
-                // restart to bootloader
-                typedef void (*do_reboot_t)(void);
-                const do_reboot_t do_reboot = (do_reboot_t)((FLASHEND - 511) >> 1);
-                wdt_disable();
-                cli(); TCCR0A = TCCR1A = TCCR2A = 0; // make sure interrupts are off and timers are reset.
-                MCUSR = 0;
-                do_reboot();
-            }
-        }
+    
+    // Clear receive buffer to remove echo of transmitted bytes
+    delay(2);
+    while (Serial.available()) {
+        Serial.read();
     }
 }
 
-void ninebotSend(NinebotMessage &msg)
+void bikebusRecv()
 {
-    msg.checksum = (uint16_t)msg.length + msg.addr + msg.mode + msg.offset;
-
-    Serial.write(msg.header[0]);
-    Serial.write(msg.header[1]);
-    Serial.write(msg.length);
-    Serial.write(msg.addr);
-    Serial.write(msg.mode);
-    Serial.write(msg.offset);
-    for(uint8_t i = 0; i < msg.length - 2; i++)
-    {
-        Serial.write(msg.data[i]);
-        msg.checksum += msg.data[i];
-    }
-
-    msg.checksum ^= 0xFFFF;
-    Serial.write(msg.checksum & 0xFF);
-    Serial.write((msg.checksum >> 8) & 0xFF);
-}
-
-void ninebotRecv()
-{
-    static NinebotMessage msg;
+    static BikeBusMessage msg;
     static uint8_t recvd = 0;
     static unsigned long begin = 0;
-    static uint16_t checksum;
 
     while(Serial.available())
     {
         g_lastActivity = millis();
 
-        if(millis() >= begin + 100)
-        { // 100ms timeout
+        if(millis() >= begin + 50)
+        { // 50ms timeout - reset if too much time has passed
             recvd = 0;
         }
 
         uint8_t byte = Serial.read();
-        recvd++;
-
+        
         switch(recvd)
         {
-            case 1:
+            case 0: // Address byte
             {
-                if(byte != 0x55)
-                { // header1 mismatch
-                    recvd = 0;
-                    break;
-                }
-
-                msg.header[0] = byte;
+                msg.address = byte;
                 begin = millis();
+                recvd++;
             } break;
 
-            case 2:
+            case 1: // Token byte
             {
-                if(byte != 0xAA)
-                { // header2 mismatch
-                    recvd = 0;
-                    break;
-                }
-
-                msg.header[1] = byte;
+                msg.token = byte;
+                recvd++;
             } break;
 
-            case 3: // length
+            case 2: // Data low byte
             {
-                if(byte < 2)
-                { // too small
-                    recvd = 0;
-                    break;
-                }
-
-                msg.length = byte;
-                checksum = byte;
+                msg.dataLow = byte;
+                recvd++;
             } break;
 
-            case 4: // addr
+            case 3: // Data high byte
             {
-                if(byte != M365BMS_RADDR)
-                { // we're not the receiver of this message
-                    recvd = 0;
-                    break;
-                }
-
-                msg.addr = byte;
-                checksum += byte;
+                msg.dataHigh = byte;
+                recvd++;
             } break;
 
-            case 5: // mode
+            case 4: // Checksum byte
             {
-                msg.mode = byte;
-                checksum += byte;
-            } break;
-
-            case 6: // offset
-            {
-                msg.offset = byte;
-                checksum += byte;
-            } break;
-
-            default:
-            {
-                if(recvd - 7 < msg.length - 2)
-                { // data
-                    msg.data[recvd - 7] = byte;
-                    checksum += byte;
+                msg.checksum = byte;
+                
+                // Verify checksum
+                uint8_t expectedChecksum = msg.address + msg.token + msg.dataLow + msg.dataHigh;
+                if(msg.checksum == expectedChecksum)
+                {
+                    // Process valid message
+                    onBikeBusMessage(msg);
                 }
-                else if(recvd - 7 - msg.length + 2 == 0)
-                { // checksum LSB
-                    msg.checksum = byte;
+                else if(g_Debug)
+                {
+                    Serial.print(F("Checksum error! Expected: "));
+                    Serial.print(expectedChecksum, HEX);
+                    Serial.print(F(", Got: "));
+                    Serial.println(msg.checksum, HEX);
                 }
-                else
-                { // checksum MSB and transmission finished
-                    msg.checksum |= (uint16_t)byte << 8;
-                    checksum ^= 0xFFFF;
-
-                    if(checksum != msg.checksum)
-                    { // invalid checksum
-                        recvd = 0;
-                        break;
-                    }
-
-                    onNinebotMessage(msg);
-                    recvd = 0;
-                }
+                
+                recvd = 0;
             } break;
         }
     }
@@ -409,69 +387,67 @@ void loop()
         uint8_t error = g_BMS.update(); // should be called at least every 250 ms
         g_lastUpdate = now;
 
-        // update M365BMS struct
+        // Update BikeBus battery state cache
         {
-            // charging state
+            // Voltage in mV
+            g_batteryVoltage = g_BMS.getBatteryVoltage();
+            
+            // Current in mA (positive = charging, negative = discharging)
+            g_batteryCurrent = -g_BMS.getBatteryCurrent(); // Invert for BikeBus convention
+            g_batteryAvgCurrent = g_batteryCurrent; // Could be averaged over time
+            
+            // State of charge (0-100%)
+            g_batterySOC = g_BMS.getSOC();
+            
+            // Temperature in 0.1K (Kelvin * 10)
+            // BMS gives us Celsius, convert to 0.1K: (C + 273.15) * 10
+            float tempC = g_BMS.getTemperatureDegC(1);
+            g_batteryTemp = (uint16_t)((tempC + 273.15) * 10.0);
+            
+            // Status flags
+            g_batteryStatus = 0;
             if(g_BMS.getBatteryCurrent() > (int16_t)g_Settings.idle_currentThres)
-                g_M365BMS.status |= (1 << 6); // charging
-            else if(g_BMS.getBatteryCurrent() < (int16_t)g_Settings.idle_currentThres / 2)
-                g_M365BMS.status &= ~(1 << 6);
-
-            if(error & STAT_OV) {
-                g_M365BMS.status |= (1 << 9); // overvoltage
-                error &= ~STAT_OV;
+                g_batteryStatus |= (1 << 6); // Charging
+            if(error & STAT_OV)
+                g_batteryStatus |= (1 << 9); // Overvoltage
+            if(g_BMS.getHighestTemperature() > (g_Settings.temp_maxDischargeC - 3) * 10)
+                g_batteryStatus |= (1 << 10); // Overheat
+            if(!error)
+                g_batteryStatus |= 1; // OK status
+            
+            // Estimate time to empty (rough calculation based on capacity and current)
+            if(g_batteryCurrent < -100) // If discharging
+            {
+                uint16_t remainingCapacity = g_Settings.capacity * g_batterySOC / 100;
+                g_batteryTimeToEmpty = (remainingCapacity * 60) / (-g_batteryCurrent); // minutes
             }
             else
-                g_M365BMS.status &= ~(1 << 9);
-
-            uint16_t batVoltage = g_BMS.getBatteryVoltage() / 10;
-            if(batVoltage > g_M365BMS.max_voltage)
-                g_M365BMS.max_voltage = batVoltage;
-
-            int16_t batCurrent = g_BMS.getBatteryCurrent() / 10;
-            if(batCurrent > 0 && (uint16_t)batCurrent > g_M365BMS.max_charge_current)
-                g_M365BMS.max_charge_current = batCurrent;
-            else if(batCurrent < 0 && (uint16_t)-batCurrent > g_M365BMS.max_discharge_current)
-                g_M365BMS.max_discharge_current = -batCurrent;
-
-            g_M365BMS.capacity_left = g_M365BMS.design_capacity * g_BMS.getSOC() / 100.0;
-            g_M365BMS.percent_left = g_BMS.getSOC();
-            g_M365BMS.current = -batCurrent;
-            g_M365BMS.voltage = batVoltage;
-            g_M365BMS.temperature[0] = g_BMS.getTemperatureDegC(1) + 20.0;
-            g_M365BMS.temperature[1] = g_BMS.getTemperatureDegC(2) + 20.0;
-
-            if(g_BMS.getHighestTemperature() > (g_Settings.temp_maxDischargeC - 3) * 10)
-                g_M365BMS.status |= (1 << 10); // overheat
-            else
-                g_M365BMS.status &= ~(1 << 10);
-
+            {
+                g_batteryTimeToEmpty = 0xFFFF; // Not discharging
+            }
+            
+            // Update cell voltages
+            uint8_t numCells = g_BMS.getNumberOfConnectedCells();
+            for(uint8_t i = 0; i < numCells && i < 15; i++)
+                g_cellVoltages[i] = g_BMS.getCellVoltage(i);
+            
+            // Handle cycle counting
             if(g_BMS.batCycles_) {
-                g_M365BMS.num_cycles += g_BMS.batCycles_;
+                g_Settings.num_cycles += g_BMS.batCycles_;
                 g_BMS.batCycles_ = 0;
-                g_Settings.num_cycles = g_M365BMS.num_cycles;
                 EEPROM.put(0, g_Settings);
             }
 
             if(g_BMS.chargedTimes_) {
-                g_M365BMS.num_charged += g_BMS.chargedTimes_;
-                g_Settings.num_charged = g_M365BMS.num_charged;
+                g_Settings.num_charged += g_BMS.chargedTimes_;
                 g_BMS.chargedTimes_ = 0;
+                EEPROM.put(0, g_Settings);
             }
 
-            uint8_t numCells = g_BMS.getNumberOfConnectedCells();
-            for(uint8_t i = 0; i < numCells; i++)
-                g_M365BMS.cell_voltages[i] = g_BMS.getCellVoltage(i);
-
-            // cell voltage difference too big
+            // Cell voltage difference check
             uint16_t bigDelta = g_BMS.getMaxCellVoltage() - g_BMS.getMinCellVoltage();
             if(bigDelta > 100)
                 error = 1;
-
-            if(error)
-                g_M365BMS.status &= ~1;
-            else
-                g_M365BMS.status |= 1;
         }
 
         if(g_oldMillis > now)
@@ -479,7 +455,7 @@ void loop()
         g_oldMillis = now;
     }
 
-    ninebotRecv();
+    bikebusRecv();
 
     if((unsigned long)(now - g_lastActivity) >= 5000 && !g_Debug)
     {
@@ -587,12 +563,16 @@ void debug_print()
     Serial.print(F(" | Delta: "));
     Serial.println(g_BMS.getMaxCellVoltage() - g_BMS.getMinCellVoltage());
 
-    Serial.print(F("maxVoltage: "));
-    Serial.println(g_M365BMS.max_voltage);
-    Serial.print(F("maxDischargeCurrent: "));
-    Serial.println(g_M365BMS.max_discharge_current);
-    Serial.print(F("maxChargeCurrent: "));
-    Serial.println(g_M365BMS.max_charge_current);
+    Serial.print(F("BikeBus Battery Voltage: "));
+    Serial.println(g_batteryVoltage);
+    Serial.print(F("BikeBus Battery Current: "));
+    Serial.println(g_batteryCurrent);
+    Serial.print(F("BikeBus Battery SOC: "));
+    Serial.println(g_batterySOC);
+    Serial.print(F("BikeBus Battery Temp: "));
+    Serial.println(g_batteryTemp);
+    Serial.print(F("BikeBus Battery Status: "));
+    Serial.println(g_batteryStatus);
 
     Serial.print(F("XREADY errors: "));
     Serial.println(g_BMS.errorCounter_[ERROR_XREADY]);

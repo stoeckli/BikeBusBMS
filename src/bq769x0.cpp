@@ -21,7 +21,6 @@
 
 /* Software I2C */
 #include <SoftWire.h>
-SoftWire Wire = SoftWire();
 /* Software I2C */
 
 const char *byte2char(int x)
