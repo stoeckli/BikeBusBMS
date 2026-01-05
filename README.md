@@ -1,48 +1,86 @@
-# Xiaomi M365 compatible BMS
+# BikeBus v1.8 Battery Management System (BMS)
 
 #### Warning: This project is meant for people with electronics and microcontroller knowledge!
 
-This repository contains alternative firmware for the following BMS hardware: [SP15SV0001-LLT](https://www.lithiumbatterypcb.com/product/13s-48v-li-ion-battery-pcb-board-54-6v-lithium-bms-with-60a-discharge-current-for-electric-motorcycle-and-e-scooter-protection-2-2-3-2-2-2-2-2/).  
+## Origin
+This project is a **fork and conversion** of the excellent M365 BMS firmware originally created for Xiaomi M365 scooters.  
+**Original Repository:** Various contributors to M365 BMS firmware  
+**Converted by:** Markus Stoeckli (support@stoeckli.net)  
+**Conversion Date:** January 5, 2026
+
+## What Changed?
+This firmware has been **completely converted** from the M365/Ninebot protocol to **BikeBus v1.8 protocol**.  
+The BMS now acts as a **Battery Slave** (address 32) on the BikeBus network, making it compatible with BikeBus-enabled e-bike systems instead of Xiaomi scooters.
+
+### Key Differences:
+- **Protocol:** BikeBus v1.8 (5-byte telegrams) instead of M365/Ninebot
+- **Baud Rate:** 9600 baud instead of 76800 baud
+- **Communication:** Simple request/response via battery tokens
+- **Compatibility:** Works with BikeBus master controllers (displays, motor controllers)
+- **No M365 ESC patches needed** - this is a completely different protocol
+
+## Overview
+This repository contains BikeBus v1.8 compatible firmware for the following BMS hardware: [SP15SV0001-LLT](https://www.lithiumbatterypcb.com/product/13s-48v-li-ion-battery-pcb-board-54-6v-lithium-bms-with-60-a-discharge-current-for-electric-motorcycle-and-e-scooter-protection-2-2-3-2-2-2-2-2/).  
 It's programmed with the [Arduino](https://www.arduino.cc/) platform and is built with [PlatformIO](https://platformio.org/).  
 It runs on an ATMega328p MCU and controls a TI BQ769x0 ([TI Datasheet](http://www.ti.com/lit/ds/symlink/bq76940.pdf)) battery monitoring IC over I²C.
 
-This is a fully fledged replacement BMS for the Xiaomi M365 that implements their proprietary BMS protocol and supports all of the features you'd expect, like:
+This BMS implements the **BikeBus v1.8 protocol** and acts as a Battery Slave, responding to queries from BikeBus master controllers with:
 
  * Battery SOC (State Of Charge: mAh, %) using Coulomb Counting
  * Pack Voltage, Cell Voltages, Current, Temperature
  * Discharge and Charge cycles
+ * Individual cell voltages (Cell 1-10)
+ * Battery status flags (charging, overvoltage, overheat)
+ * Design capacity, nominal voltage, cycle count
+ * Time to empty estimation
 
-All the battery information can be viewed in the native apps or 3rd party apps like [m365 Tools](https://play.google.com/store/apps/details?id=app.peretti.m365tools).
+The battery information can be queried by any BikeBus v1.8 compatible master controller or display. See the [BikeBus library](../BikeBusDisplay/lib/BikeBus/) for the complete protocol specification.
 
-Here's some pr0n of my 12S4P NCR18650B battery: [Gallery](https://cloud.botox.bz/apps/gallery/s/94drnBJfjacBDnr).  
-Materials I used:
-- [Malectrics DIY Arduino Battery Spot Welder](https://malectrics.eu/product/diy-arduino-battery-spot-welder-prebuilt-kit-v3/)
-- [8mm*0.2mm pure nickel strip](https://www.aliexpress.com/item/Pure-Nickel-Strip-for-Scientific-research-18650-battery-welding-Size-0-2-8mm/32739610924.html) (0.15mm is easier to weld)
-- [18650 positive insulation pad](https://www.aliexpress.com/item/100Pcs-18650-lithium-battery-positive-electrode-hollow-flat-head-insulation-pad-meson-18500-positive-surface-pad/32850696072.html) **important**
-- [125mm/80mm Battery PVC shrink wrap](https://www.aliexpress.com/item/125mm-Diameter-80mm-PVC-Heat-Shrink-Tubing-for-Battery-Wrap-Free-Shipping/32790874560.html)
-- [50mm kapton tape](https://www.aliexpress.com/item/5-6-8-10-12-15-20-25-30-40-50MM-x-30M-Tape-Sticky-High/32889388030.html)
-- I used automotive windshield glue that I had lying around, anything that sticks well to PVC should work.
-- 18650 Cells: 
-  - I used NCR18650B because I got them cheap.
-  - Good price/performance: [Samsung INR18650-29E](https://eu.nkon.nl/samsung-inr18650-29e.html)
-- Charger: Mean Well HLG-240H-48A or ELG-240-48A
-  - I paid 45€ for it at [getgoods.com](https://www.getgoods.com/products/442045/Mean-Well-HLG-240H-48A-LED-driver-LED-transformer-Constant-voltage-Constant-current-240-W-5-A-48-Vdc-PFC-circuit-Surge.html) but pricing seems to vary a lot by country.
-  - Both Mean Well HLG-240H-48A and ELG-240-48A allow you to set the max current and voltage.
-    - I charge with 4A (1A per cell) and to 4.1V per cell for better cycle life.
-  - Look for another CC/CV power supply if this one is too expensive.
-    - Keep in mind that the chager output voltage has to be adjustable to 49.2V (50.4V if you plan on running 4.2V per cell).
-  
+## BikeBus Protocol Implementation
 
+### Communication Settings
+- **Baud Rate:** 9600 baud (8N1)
+- **Protocol:** BikeBus v1.8 (5-byte telegrams)
+- **BMS Address:** 32 (BIKEBUS_BATTERY_ADDR - Battery 1)
+- **Half-Duplex:** Yes (single wire with transceiver)
 
-## The caveat
-The BMS uses an ATMega328p MCU without an external crystal and thus has to use the internal 8 MHz resonator.  
-However at 8 MHz the hardware UART will not function at 115200 baud, which is the baudrate the M365 controller expects.  
-The frequency of the internal resonator can be calibrated (manually with an oscilloscope or logic analyzer) using OSCCAL to still make this work.  
+### Telegram Format
+```
+[Address] [Token] [DataLow] [DataHigh] [Checksum]
+```
+- **Address:** Device address (32 for Battery 1)
+- **Token:** Data identifier (voltage, current, SOC, etc.)
+- **DataLow/High:** 16-bit data value (little-endian)
+- **Checksum:** Simple sum of first 4 bytes
 
-But instead we simply patch the M365 firmware to use 76800 baud which works just fine with the internal 8 MHz resonator and no calibration trouble.  
-Patch your firmware at [m365beta.botox.bz](https://m365beta.botox.bz/) and use the "Change ESC<->BMS baud rate to 76800" option.  
-Thanks to Oleg for the idea and help.
+### Supported Battery Tokens
+The BMS responds to the following BikeBus battery tokens:
 
+| Token | Description | Unit | Notes |
+|-------|-------------|------|-------|
+| 18 | Battery temperature | 0.1K | (Kelvin * 10) |
+| 20 | Battery voltage | mV | Total pack voltage |
+| 22 | Battery current | mA | Positive = charging |
+| 24 | Average current | mA | Smoothed value |
+| 28 | State of charge | % | 0-100% |
+| 32 | Remaining capacity | mAh | Based on SOC |
+| 36 | Time to empty | minutes | Estimated |
+| 38 | Avg time to empty | minutes | Estimated |
+| 46 | Status flags | bitfield | See below |
+| 48 | Cycle count | count | Charge cycles |
+| 50 | Design capacity | mAh | Battery capacity |
+| 52 | Design voltage | mV | Nominal voltage |
+| 56 | Manufacturing date | packed | Date format |
+| 122-140 | Cell voltages 1-10 | mV | Individual cells |
+| 200 | Status flags read | bitfield | Same as token 46 |
+
+### Status Flags (Token 46/200)
+- **Bit 0:** Battery OK (no errors)
+- **Bit 6:** Charging active
+- **Bit 9:** Overvoltage condition
+- **Bit 10:** Overheat condition
+
+For complete protocol documentation, see [BIKEBUS_CONVERSION.md](BIKEBUS_CONVERSION.md).
 
 ## Hardware
 ### Requirements
@@ -73,14 +111,27 @@ Now we make some calculations: ```R[uOhm]  = RAW Value * 8440 / A[mA]```.
 _Please refer to [Software/Configuration](#Configuration) on how to get, change, put, apply and save Settings for the BMS._
 
 ### Wiring
-#### IMPORTANT: The M365 ESC - connects to P- of the BMS!
-**Otherwise the M365 will be damaged when you brake with a full battery due to overvoltage!**
+#### IMPORTANT: Connect the BMS to your BikeBus network properly!
 
-**C- has to be used to charge the battery, otherwise the BMS offers no protection against faulty chargers/overvoltage!**
+**The BikeBus uses half-duplex UART communication. You may need a half-duplex transceiver depending on your setup.**
 
-**Do not cut the big - trace on the M365 ESC or it will damage the BMS because of different GND potentials on UART!**
+**Connection Points:**
+- **TX/RX:** Connect to the BikeBus data line (half-duplex)
+- **P-:** Connect to battery negative (main discharge path)
+- **C-:** Use for charging (charge protection)
+- **B-:** Connect to battery pack negative
 
-**Do not connect GND from the BMS to the M365 anywhere! P- is GND for the M365! The only extra wires going from the BMS to the M365 are RX and TX!**
+**BikeBus Communication:**
+- The BMS listens on address 32 (Battery 1)
+- Master controller queries the BMS for battery data
+- BMS responds with voltage, current, SOC, temperature, etc.
+- All communication is at 9600 baud
+
+**Important Notes:**
+- Do not connect GND separately if using half-duplex transceivers with isolation
+- Ensure proper ground reference between BMS and BikeBus master
+- P- carries the main discharge current
+- C- should be used for charging to enable overvoltage protection
 
 ## Software
 ### Configuration
@@ -90,15 +141,18 @@ Depending on your battery you might want to configure some of the settings here:
   * Example: for 4 * NCR18650B I used a value of 12400mAh.
 * `nominal_voltage`: The nominal voltage in mV of your cells, this will be 3.6V for almost all cells.
 * `full_voltage`: The voltage in mV that you will charge your cells to. I only charge mine to 4.1V for cycle life.
-* `ODP_current`: Over current protection value in mA, if your scooter is shutting off on your crazy settings then make this higher.
+* `ODP_current`: Over current protection value in mA, if your system is shutting off then make this higher.
 * `UVP_voltage`: The BMS will shut off P- when any cells voltage goes below this.
   * Remember: During load the cell voltage will drop a lot.
 * `OVP_voltage`: The BMS will shut off C- when any cells voltage goes above this.
-  * So do not connect your M365 ESC to C- or it'll die when you brake with a full battery, use P- for the ESC and C- to charge!
+  * Use C- for charging to enable overvoltage protection!
 
-If you've already flashed and run the firmware on your BMS you can only make changes using `configtool.py` (since the settings are written to EEPROM).  
-Use `getSettings()` to populate g_Settings, then make changes like so: `g_Settings.capacity = 7800`.  
-If you're done with making changes use: `putSettings()` to push them to the BMS, use `applySettings()` to apply them and `saveSettings()` to write them to EEPROM.
+**Note:** This BikeBus BMS does not use the `configtool.py` from the M365 version. Configuration must be done by editing `src/main.h` and recompiling.
+
+### BikeBus Protocol Details
+For detailed information about the BikeBus v1.8 protocol implementation, see:
+- [BIKEBUS_CONVERSION.md](BIKEBUS_CONVERSION.md) - Complete conversion documentation
+- [BikeBus Library](../BikeBusDisplay/lib/BikeBus/) - Protocol specification and examples
 
 ### Compiling
 This project uses [PlatformIO](https://platformio.org/), please check out their [Documentation](https://docs.platformio.org/en/latest/) to get started.
@@ -126,6 +180,8 @@ You can upload the firmware in platformio, there's a little arrow somewhere.
 You have to short the RESET pin to GROUND right before you hit the upload button!  
 For updating firmware you don't have to short the RESET pin but can run `bootloader.py /dev/ttyUSB0` right before you hit upload.
 
+**Note:** The BikeBus firmware uses **9600 baud**, not 76800 or 57600 like the M365 version.
+
 ### Optional: Building optiboot yourself
 Clone the [Optiboot repository](https://github.com/Optiboot/optiboot/) and `git apply` this patch: [optiboot.diff](optiboot.diff)
 * 8MHz build: `make atmega328 AVR_FREQ=8000000L PRODUCTION=1 BAUD_RATE=57600 LED_START_FLASHES=0`
@@ -133,7 +189,8 @@ Clone the [Optiboot repository](https://github.com/Optiboot/optiboot/) and `git 
 
 
 ## Troubleshooting
-Have you patched your M365 firmware for 76800 baud?
+
+**This BMS uses BikeBus protocol, not M365 protocol!** Do not try to connect it to a Xiaomi M365 scooter.
 
 Make sure the temperature sensors are plugged in and all wires are connected properly.
 B- needs to be connected to the battery -.
@@ -142,31 +199,62 @@ Reset the BMS by shorting GND with RST on the ISP header.
 
 Does your Voltmeter only show a too low voltage like 10 or 20 Volt? -> Reset the BMS by shorting GND with RST on the ISP header. The AVR Chip crashed during plugging the balancing connector.
 
-Run `configtool.py /dev/ttyUSB0` in an interactive python shell (IDLE on Windows, `python -i` on Linux) with the correct COM port.  
-You'll probably have to install these two dependencies: [cstruct](https://pypi.org/project/cstruct/) and [pyserial](https://pypi.org/project/pyserial/).  
-Check the source code for commands you can use, though you'll probably only need `debug_print()`.
-You can also use any serial terminal and send this string in HEX `55aa0322fa0500dbfe` instead of `debug_print()`.  
-Since the controller will enter sleep mode after 5 seconds of inactivity you'll have to send this twice quickly when using a serial terminal.
+### Testing BikeBus Communication
+You can test the BMS by sending BikeBus telegrams:
+1. Connect a USB-UART adapter to the BMS TX/RX pins
+2. Set baud rate to 9600, 8N1
+3. Send a query: `[32][20][00][00][52]` (hex) - Query battery voltage
+4. BMS should respond with: `[32][20][LL][HH][CS]` where LL/HH is voltage in mV
 
+Enable debug mode in the code (`g_Debug = true`) to see detailed TX/RX messages on the serial console.
 
-## M365
-After you've checked that your BMS works (voltage between + and P-) and communicates via UART (it print's `BOOTED!` when it boots) you can connect it with your M365.
+### Status Messages
+On boot, the BMS prints: `BikeBus BMS BOOTED!`
 
-The original BMS was connected to the top 3pin header on the M365 ESC: [Image](https://cloud.botox.bz/s/QLzWYc9C253QECi/preview)  
-You'll have to connect the ESC **R** pin to the BMS **TX** pin and the **T** pin to the **RX** pin.  
-The ESC **L** pin is + for the red/brake light on the back fender, you'll have to make your own cable for that.
+## BikeBus Integration
+The BMS is designed to work with BikeBus v1.8 compatible master controllers. For example applications, see:
+- [BikeBusDisplay](../BikeBusDisplay/) - Display controller with BikeBus library
+- The master controller should query the BMS periodically for battery data
+- Typical query sequence: voltage → current → SOC → temperature → status
+
+### Connecting to a BikeBus Master
+1. Connect BMS UART to the BikeBus network (may require half-duplex transceiver)
+2. Ensure proper ground reference
+3. Master controller should query address 32 (Battery 1)
+4. BMS will automatically respond to valid queries
+5. Data is updated every 500ms internally
+
+## Compatibility
+- **Works with:** BikeBus v1.8 compatible controllers, displays, and systems
+- **Does NOT work with:** Xiaomi M365 scooters (different protocol)
+- **Battery Protection:** All BQ769x0 features remain active (OV, UV, OC, temperature)
+- **Tested with:** BikeBus library (see BikeBusDisplay project)
 
 
 ## Final words
 ### Credits
-A big part of the BQ769x0 code is taken from here: [LibreSolar/bq769x0_mbed_lib](https://github.com/LibreSolar/bq769x0_mbed_lib).
+**Original M365 BMS firmware:** Various contributors to the M365 open-source community  
+**BQ769x0 library:** A big part of the BQ769x0 code is taken from [LibreSolar/bq769x0_mbed_lib](https://github.com/LibreSolar/bq769x0_mbed_lib)  
+**BikeBus v1.8 Protocol Conversion:** Markus Stoeckli (support@stoeckli.net) - January 2026
+
+This firmware is a complete protocol conversion from M365/Ninebot to BikeBus v1.8, making the BMS compatible with BikeBus e-bike systems.
 
 ### Support
-If you've spent at least an hour with your issue you can ask about it nicely in my [M365 Telegram group](https://t.me/XiaomiM365Hacking).
+For BikeBus-specific questions: contact Markus Stoeckli (support@stoeckli.net)  
+For BQ769x0 hardware questions: see original M365 BMS community resources
+
+### Related Projects
+- [BikeBusDisplay](../BikeBusDisplay/) - Display controller with BikeBus v1.8 library
+- [BikeBus Protocol Specification](../BikeBusDisplay/lib/BikeBus/) - Complete protocol documentation
 
 ### Disclaimer
 If you break anything it's your own fault.  
 **Works for me™.** is the only guarantee I can give you.
 
-I am in no way affiliated with the company that makes the BMS. I just bought it, reversed some stuff and made this firmware.
+I am in no way affiliated with the company that makes the BMS. I just bought it, reversed some stuff and made this firmware.  
+This is a conversion of existing open-source M365 BMS firmware to the BikeBus v1.8 protocol.
+
+### License
+This project maintains the same license as the original M365 BMS firmware from which it was derived.  
+BikeBus protocol implementation: Copyright (C) 2026 Markus Stoeckli
  
